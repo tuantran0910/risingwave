@@ -167,6 +167,40 @@ pub struct IcebergCommon {
     /// Enable vended credentials for iceberg REST catalog.
     #[serde(default, deserialize_with = "deserialize_optional_bool_from_string")]
     pub vended_credentials: Option<bool>,
+
+    /// Security type for REST catalog authentication.
+    /// Supported values: `none`, `oauth2`, `google`.
+    /// When set to `google`, uses Iceberg's GoogleAuthManager (requires Iceberg 1.10+)
+    /// for authentication using Google Application Default Credentials (ADC).
+    #[serde(rename = "catalog.security")]
+    pub catalog_security: Option<String>,
+
+    /// Custom FileIO implementation class for the Iceberg catalog.
+    /// Example: `org.apache.iceberg.gcp.gcs.GCSFileIO` for Google Cloud Storage.
+    #[serde(rename = "catalog.io-impl")]
+    pub catalog_io_impl: Option<String>,
+
+    /// Whether to enable REST metrics reporting for the catalog.
+    /// Default is true. Set to false to disable metrics reporting.
+    #[serde(
+        rename = "catalog.rest.metrics-reporting-enabled",
+        default,
+        deserialize_with = "deserialize_optional_bool_from_string"
+    )]
+    pub rest_metrics_reporting_enabled: Option<bool>,
+
+    /// Path to GCP credentials file for Google authentication.
+    /// Only applicable when `catalog.security` is set to `google`.
+    #[serde(rename = "gcp.credentials.path")]
+    pub gcp_credentials_path: Option<String>,
+
+    /// Whether to enable nested namespace support for REST catalog.
+    #[serde(
+        rename = "catalog.rest.nested-namespace-enabled",
+        default,
+        deserialize_with = "deserialize_optional_bool_from_string"
+    )]
+    pub rest_nested_namespace_enabled: Option<bool>,
 }
 
 impl EnforceSecret for IcebergCommon {
@@ -177,6 +211,7 @@ impl EnforceSecret for IcebergCommon {
         "catalog.credential",
         "catalog.token",
         "catalog.oauth2_server_uri",
+        "gcp.credentials.path",
         "adlsgen2.account_key",
         "adlsgen2.client_secret",
         "glue.access.key",
@@ -362,13 +397,17 @@ impl IcebergCommon {
                 Some(warehouse_path) => {
                     let (bucket, _) = {
                         let is_s3_tables = warehouse_path.starts_with("arn:aws:s3tables");
+                        // BigLake catalog federation uses bq:// prefix for BigQuery-managed Iceberg tables
+                        let is_bq_catalog_federation = warehouse_path.starts_with("bq://");
                         let url = Url::parse(warehouse_path);
-                        if (url.is_err() || is_s3_tables)
+                        if (url.is_err() || is_s3_tables || is_bq_catalog_federation)
                             && (catalog_type == "rest" || catalog_type == "rest_rust")
                         {
-                            // If the warehouse path is not a valid URL, it could be a warehouse name in rest catalog
-                            // Or it could be a s3tables path, which is not a valid URL but a valid warehouse path,
-                            // so we allow it to pass here.
+                            // If the warehouse path is not a valid URL, it could be:
+                            // - A warehouse name in REST catalog
+                            // - An S3 Tables path (arn:aws:s3tables:...)
+                            // - A BigLake path (bq://projects/...) for Google Cloud BigQuery integration
+                            // We allow these to pass through for REST catalogs.
                             (None, None)
                         } else {
                             let url = url.with_context(|| {
@@ -430,13 +469,14 @@ impl IcebergCommon {
             }
             java_catalog_configs.extend(java_catalog_props.clone());
 
-            // Currently we only support s3, so let's set it to s3
-            java_catalog_configs.insert(
-                "io-impl".to_owned(),
-                "org.apache.iceberg.aws.s3.S3FileIO".to_owned(),
-            );
+            // Set io-impl: use custom io-impl if provided, otherwise default to S3FileIO
+            let io_impl = self
+                .catalog_io_impl
+                .clone()
+                .unwrap_or_else(|| "org.apache.iceberg.aws.s3.S3FileIO".to_owned());
+            java_catalog_configs.insert("io-impl".to_owned(), io_impl);
 
-            // suppress log of S3FileIO like: Unclosed S3FileIO instance created by...
+            // suppress log of FileIO like: Unclosed FileIO instance created by...
             java_catalog_configs.insert("init-creation-stacktrace".to_owned(), "false".to_owned());
 
             if let Some(region) = &self.s3_region {
@@ -467,19 +507,72 @@ impl IcebergCommon {
 
             match self.catalog_type() {
                 "rest" => {
-                    if let Some(credential) = &self.catalog_credential {
-                        java_catalog_configs.insert("credential".to_owned(), credential.clone());
+                    // Handle security type for REST catalog (Iceberg 1.10+)
+                    if let Some(security) = &self.catalog_security {
+                        match security.to_lowercase().as_str() {
+                            "google" => {
+                                // Google AuthManager (Iceberg 1.10+) - uses Google ADC or service account
+                                java_catalog_configs.insert(
+                                    "rest.auth.type".to_owned(),
+                                    "org.apache.iceberg.gcp.auth.GoogleAuthManager".to_owned(),
+                                );
+                                // Set GCP credentials path if provided
+                                if let Some(gcp_credentials_path) = &self.gcp_credentials_path {
+                                    java_catalog_configs.insert(
+                                        "gcp.auth.credentials-path".to_owned(),
+                                        gcp_credentials_path.clone(),
+                                    );
+                                }
+                            }
+                            "oauth2" => {
+                                // Standard OAuth2 authentication
+                                if let Some(credential) = &self.catalog_credential {
+                                    java_catalog_configs
+                                        .insert("credential".to_owned(), credential.clone());
+                                }
+                                if let Some(token) = &self.catalog_token {
+                                    java_catalog_configs
+                                        .insert("token".to_owned(), token.clone());
+                                }
+                                if let Some(oauth2_server_uri) = &self.catalog_oauth2_server_uri {
+                                    java_catalog_configs.insert(
+                                        "oauth2-server-uri".to_owned(),
+                                        oauth2_server_uri.clone(),
+                                    );
+                                }
+                                if let Some(scope) = &self.catalog_scope {
+                                    java_catalog_configs.insert("scope".to_owned(), scope.clone());
+                                }
+                            }
+                            "none" | "" => {
+                                // No authentication
+                            }
+                            _ => {
+                                tracing::warn!(
+                                    "Unknown catalog.security value: {}. Supported values: none, oauth2, google",
+                                    security
+                                );
+                            }
+                        }
+                    } else {
+                        // Legacy behavior: use individual OAuth2 properties if security type not specified
+                        if let Some(credential) = &self.catalog_credential {
+                            java_catalog_configs
+                                .insert("credential".to_owned(), credential.clone());
+                        }
+                        if let Some(token) = &self.catalog_token {
+                            java_catalog_configs.insert("token".to_owned(), token.clone());
+                        }
+                        if let Some(oauth2_server_uri) = &self.catalog_oauth2_server_uri {
+                            java_catalog_configs
+                                .insert("oauth2-server-uri".to_owned(), oauth2_server_uri.clone());
+                        }
+                        if let Some(scope) = &self.catalog_scope {
+                            java_catalog_configs.insert("scope".to_owned(), scope.clone());
+                        }
                     }
-                    if let Some(token) = &self.catalog_token {
-                        java_catalog_configs.insert("token".to_owned(), token.clone());
-                    }
-                    if let Some(oauth2_server_uri) = &self.catalog_oauth2_server_uri {
-                        java_catalog_configs
-                            .insert("oauth2-server-uri".to_owned(), oauth2_server_uri.clone());
-                    }
-                    if let Some(scope) = &self.catalog_scope {
-                        java_catalog_configs.insert("scope".to_owned(), scope.clone());
-                    }
+
+                    // REST catalog-specific options
                     if let Some(rest_signing_region) = &self.rest_signing_region {
                         java_catalog_configs.insert(
                             "rest.signing-region".to_owned(),
@@ -505,6 +598,22 @@ impl IcebergCommon {
                             java_catalog_configs
                                 .insert("rest.secret-access-key".to_owned(), secret_key.clone());
                         }
+                    }
+
+                    // Nested namespace support
+                    if let Some(nested_namespace_enabled) = self.rest_nested_namespace_enabled {
+                        java_catalog_configs.insert(
+                            "rest.nested-namespace-enabled".to_owned(),
+                            nested_namespace_enabled.to_string(),
+                        );
+                    }
+
+                    // REST metrics reporting
+                    if let Some(rest_metrics_enabled) = self.rest_metrics_reporting_enabled {
+                        java_catalog_configs.insert(
+                            "rest-metrics-reporting-enabled".to_owned(),
+                            rest_metrics_enabled.to_string(),
+                        );
                     }
                 }
                 "glue" => {

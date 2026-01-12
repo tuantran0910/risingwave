@@ -578,6 +578,39 @@ IcebergConfig:
     comments: Enable vended credentials for iceberg REST catalog.
     required: false
     default: Default::default
+  - name: catalog.security
+    field_type: String
+    comments: |-
+      Security type for REST catalog authentication.
+      Supported values: `none`, `oauth2`, `google`.
+      When set to `google`, uses Iceberg's GoogleAuthManager (requires Iceberg 1.10+)
+      for authentication using Google Application Default Credentials (ADC).
+    required: false
+  - name: catalog.io-impl
+    field_type: String
+    comments: |-
+      Custom FileIO implementation class for the Iceberg catalog.
+      Example: `org.apache.iceberg.gcp.gcs.GCSFileIO` for Google Cloud Storage.
+    required: false
+  - name: catalog.rest.metrics-reporting-enabled
+    field_type: bool
+    comments: |-
+      Whether to enable REST metrics reporting for the catalog.
+      Default is true. Set to false to disable metrics reporting.
+    required: false
+    default: Default::default
+  - name: gcp.credentials.path
+    field_type: String
+    comments: |-
+      Path to GCP credentials file for Google authentication.
+      Only applicable when `catalog.security` is set to `google`.
+    required: false
+  - name: catalog.rest.nested-namespace-enabled
+    field_type: bool
+    comments: |-
+      Whether to enable nested namespace support for REST catalog.
+    required: false
+    default: Default::default
   - name: database.name
     field_type: String
     required: false
