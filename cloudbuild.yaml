@@ -1,4 +1,5 @@
 options:
+  logging: CLOUD_LOGGING_ONLY
   pool:
     name: projects/rainbow-data-production-483609/locations/us-central1/workerPools/cloudbuild-private-pool
 
