@@ -1,6 +1,5 @@
 options:
   logging: CLOUD_LOGGING_ONLY
-  machineType: E2_HIGHCPU_4
 
 steps:
   - name: 'gcr.io/cloud-builders/docker'
