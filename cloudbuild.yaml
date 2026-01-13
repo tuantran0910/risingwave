@@ -1,0 +1,16 @@
+options:
+  pool:
+    name: projects/rainbow-data-production-483609/locations/us-central1/workerPools/cloudbuild-private-pool
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/rainbow-data-production-483609/rainbow-docker-repo/risingwave:$TAG_NAME'
+      - './docker/Dockerfile'
+      - '--build-arg'
+      - 'CARGO_PROFILE=production'
+
+images:
+  - 'gcr.io/rainbow-data-production-483609/rainbow-docker-repo/risingwave:$TAG_NAME'
