@@ -177,7 +177,7 @@ pub struct IcebergCommon {
 
     /// Custom FileIO implementation class for the Iceberg catalog.
     /// Example: `org.apache.iceberg.gcp.gcs.GCSFileIO` for Google Cloud Storage.
-    #[serde(rename = "catalog.io-impl")]
+    #[serde(rename = "catalog.io_impl")]
     pub catalog_io_impl: Option<String>,
 
     /// Whether to enable REST metrics reporting for the catalog.

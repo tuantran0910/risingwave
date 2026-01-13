@@ -3105,7 +3105,7 @@ mod test {
                 "x-goog-user-project=my-gcp-project",
             ),
             ("catalog.security", "google"),
-            ("catalog.io-impl", "org.apache.iceberg.gcp.gcs.GCSFileIO"),
+            ("catalog.io_impl", "org.apache.iceberg.gcp.gcs.GCSFileIO"),
             ("catalog.rest.metrics-reporting-enabled", "false"),
             ("catalog.rest.nested-namespace-enabled", "true"),
             ("gcp.credentials.path", "/path/to/service-account.json"),

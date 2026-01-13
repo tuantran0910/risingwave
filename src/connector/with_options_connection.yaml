@@ -157,7 +157,7 @@ IcebergConnection:
       When set to `google`, uses Iceberg's GoogleAuthManager (requires Iceberg 1.10+)
       for authentication using Google Application Default Credentials (ADC).
     required: false
-  - name: catalog.io-impl
+  - name: catalog.io_impl
     field_type: String
     comments: |-
       Custom FileIO implementation class for the Iceberg catalog.
