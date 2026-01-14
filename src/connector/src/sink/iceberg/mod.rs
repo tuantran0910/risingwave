@@ -673,12 +673,15 @@ async fn create_table_if_not_exists_impl(config: &IcebergConfig, param: &SinkPar
             match &config.common.warehouse_path {
                 Some(warehouse_path) => {
                     let is_s3_tables = warehouse_path.starts_with("arn:aws:s3tables");
+                    let is_bigquery = warehouse_path.starts_with("bq://");
                     let url = Url::parse(warehouse_path);
-                    if url.is_err() || is_s3_tables {
-                        // For rest catalog, the warehouse_path could be a warehouse name.
+                    if url.is_err() || is_s3_tables || is_bigquery {
+                        // For rest catalog, BigQuery catalog federation, or S3 tables,
+                        // the warehouse_path could be a warehouse name or special identifier.
                         // In this case, we should specify the location when creating a table.
                         if config.common.catalog_type() == "rest"
                             || config.common.catalog_type() == "rest_rust"
+                            || is_bigquery
                         {
                             None
                         } else {
