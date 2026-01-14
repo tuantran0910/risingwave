@@ -307,6 +307,12 @@ pub struct IcebergConfig {
     #[serde(rename = "table.properties")]
     pub table_properties: Option<String>,
 
+    /// Namespace properties for Iceberg namespace creation.
+    /// Format: "key1=value1;key2=value2;key3=value3"
+    /// Example: "gcp-region=us;location=gs://my-bucket/namespace"
+    #[serde(rename = "namespace.properties")]
+    pub namespace_properties: Option<String>,
+
     /// Whether it is `exactly_once`, the default is true.
     #[serde(default = "default_some_true")]
     #[serde_as(as = "Option<DisplayFromStr>")]
@@ -605,8 +611,25 @@ async fn create_table_if_not_exists_impl(config: &IcebergConfig, param: &SinkPar
             .await
             .map_err(|e| SinkError::Iceberg(anyhow!(e)))?
         {
+            // Build namespace properties
+            let mut namespace_props = HashMap::new();
+            if let Some(ns_props_str) = &config.namespace_properties {
+                for pair in ns_props_str.split(';') {
+                    let pair = pair.trim();
+                    if pair.is_empty() {
+                        continue;
+                    }
+                    let mut parts = pair.split('=');
+                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                        namespace_props.insert(key.to_owned(), value.to_owned());
+                    } else {
+                        bail!("Invalid namespace property format: {}", pair);
+                    }
+                }
+            }
+
             catalog
-                .create_namespace(&namespace, HashMap::default())
+                .create_namespace(&namespace, namespace_props)
                 .await
                 .map_err(|e| SinkError::Iceberg(anyhow!(e)))
                 .context("failed to create iceberg namespace")?;
@@ -2979,6 +3002,7 @@ mod test {
             commit_checkpoint_interval: ICEBERG_DEFAULT_COMMIT_CHECKPOINT_INTERVAL,
             create_table_if_not_exists: false,
             table_properties: None,
+            namespace_properties: None,
             is_exactly_once: Some(true),
             commit_retry_num: 8,
             enable_compaction: true,
