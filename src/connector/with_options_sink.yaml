@@ -592,7 +592,7 @@ IcebergConfig:
       Custom FileIO implementation class for the Iceberg catalog.
       Example: `org.apache.iceberg.gcp.gcs.GCSFileIO` for Google Cloud Storage.
     required: false
-  - name: catalog.rest.metrics-reporting-enabled
+  - name: catalog.rest.metrics_reporting_enabled
     field_type: bool
     comments: |-
       Whether to enable REST metrics reporting for the catalog.
@@ -605,7 +605,7 @@ IcebergConfig:
       Path to GCP credentials file for Google authentication.
       Only applicable when `catalog.security` is set to `google`.
     required: false
-  - name: catalog.rest.nested-namespace-enabled
+  - name: catalog.rest.nested_namespace_enabled
     field_type: bool
     comments: |-
       Whether to enable nested namespace support for REST catalog.

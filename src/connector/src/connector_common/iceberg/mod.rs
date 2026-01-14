@@ -183,7 +183,7 @@ pub struct IcebergCommon {
     /// Whether to enable REST metrics reporting for the catalog.
     /// Default is true. Set to false to disable metrics reporting.
     #[serde(
-        rename = "catalog.rest.metrics-reporting-enabled",
+        rename = "catalog.rest.metrics_reporting_enabled",
         default,
         deserialize_with = "deserialize_optional_bool_from_string"
     )]
@@ -196,7 +196,7 @@ pub struct IcebergCommon {
 
     /// Whether to enable nested namespace support for REST catalog.
     #[serde(
-        rename = "catalog.rest.nested-namespace-enabled",
+        rename = "catalog.rest.nested_namespace_enabled",
         default,
         deserialize_with = "deserialize_optional_bool_from_string"
     )]
