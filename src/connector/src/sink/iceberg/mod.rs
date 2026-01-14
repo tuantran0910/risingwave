@@ -301,6 +301,12 @@ pub struct IcebergConfig {
     #[serde(default, deserialize_with = "deserialize_bool_from_string")]
     pub create_table_if_not_exists: bool,
 
+    /// Table properties for Iceberg table creation.
+    /// Format: "key1=value1;key2=value2;key3=value3"
+    /// Example: "bq_connection=projects/my-project/locations/us/connections/my-conn;format-version=2"
+    #[serde(rename = "table.properties")]
+    pub table_properties: Option<String>,
+
     /// Whether it is `exactly_once`, the default is true.
     #[serde(default = "default_some_true")]
     #[serde_as(as = "Option<DisplayFromStr>")]
@@ -699,6 +705,23 @@ async fn create_table_if_not_exists_impl(config: &IcebergConfig, param: &SinkPar
             None => None,
         };
 
+        // Build table properties
+        let mut table_properties = HashMap::new();
+        if let Some(table_props_str) = &config.table_properties {
+            for pair in table_props_str.split(';') {
+                let pair = pair.trim();
+                if pair.is_empty() {
+                    continue;
+                }
+                let mut parts = pair.split('=');
+                if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                    table_properties.insert(key.to_owned(), value.to_owned());
+                } else {
+                    bail!("Invalid table property format: {}", pair);
+                }
+            }
+        }
+
         let table_creation_builder = TableCreation::builder()
             .name(config.table.table_name().to_owned())
             .schema(iceberg_schema);
@@ -707,12 +730,19 @@ async fn create_table_if_not_exists_impl(config: &IcebergConfig, param: &SinkPar
             (Some(location), Some(partition_spec)) => table_creation_builder
                 .location(location)
                 .partition_spec(partition_spec)
+                .properties(table_properties)
                 .build(),
-            (Some(location), None) => table_creation_builder.location(location).build(),
+            (Some(location), None) => table_creation_builder
+                .location(location)
+                .properties(table_properties)
+                .build(),
             (None, Some(partition_spec)) => table_creation_builder
                 .partition_spec(partition_spec)
+                .properties(table_properties)
                 .build(),
-            (None, None) => table_creation_builder.build(),
+            (None, None) => table_creation_builder
+                .properties(table_properties)
+                .build(),
         };
 
         catalog
@@ -2948,6 +2978,7 @@ mod test {
                 .collect(),
             commit_checkpoint_interval: ICEBERG_DEFAULT_COMMIT_CHECKPOINT_INTERVAL,
             create_table_if_not_exists: false,
+            table_properties: None,
             is_exactly_once: Some(true),
             commit_retry_num: 8,
             enable_compaction: true,

@@ -75,6 +75,10 @@ IcebergConnection:
     field_type: String
     comments: Path of iceberg warehouse.
     required: false
+  - name: table.properties
+    field_type: String
+    comments: Table properties for Iceberg table creation. Format should be semicolon-separated key-value pairs like "key1=value1;key2=value2;key3=value3". Example "bq_connection=projects/my-project/locations/us/connections/my-conn;format-version=2".
+    required: false
   - name: catalog.name
     field_type: String
     comments: Catalog name, default value is risingwave.
