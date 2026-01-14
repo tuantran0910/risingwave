@@ -147,7 +147,7 @@ impl Catalog for JniCatalog {
     async fn create_namespace(
         &self,
         namespace: &iceberg::NamespaceIdent,
-        _properties: HashMap<String, String>,
+        properties: HashMap<String, String>,
     ) -> iceberg::Result<iceberg::Namespace> {
         execute_with_jni_env(self.jvm, |env| {
             let namespace_jstr = if namespace.is_empty() {
@@ -159,8 +159,18 @@ impl Catalog for JniCatalog {
                 env.new_string(&namespace[0]).unwrap()
             };
 
-            call_method!(env, self.java_catalog.as_obj(), {void createNamespace(String)},
-                &namespace_jstr)
+            // Serialize properties to JSON to pass to Java
+            let properties_json = if properties.is_empty() {
+                env.new_string("").unwrap()
+            } else {
+                let json_str = serde_json::to_string(&properties).map_err(|e| {
+                    anyhow::anyhow!("Failed to serialize namespace properties: {e}")
+                })?;
+                env.new_string(&json_str)?
+            };
+
+            call_method!(env, self.java_catalog.as_obj(), {void createNamespace(String, String)},
+                &namespace_jstr, &properties_json)
             .with_context(|| format!("Failed to create namespace: {namespace}"))?;
 
             Ok(Namespace::new(namespace.clone()))
@@ -568,5 +578,165 @@ impl JniCatalog {
     ) -> ConnectorResult<Arc<dyn Catalog>> {
         let catalog = Self::build(file_io_props, name, catalog_impl, java_catalog_props)?;
         Ok(Arc::new(catalog) as Arc<dyn Catalog>)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that namespace properties can be serialized to JSON correctly.
+    /// This verifies the data format that will be passed to the Java side.
+    #[test]
+    fn test_namespace_properties_serialization() {
+        let mut properties = HashMap::new();
+        properties.insert("location".to_string(), "gs://my-bucket/namespace".to_string());
+        properties.insert("gcp-region".to_string(), "us".to_string());
+
+        let json = serde_json::to_string(&properties).expect("Failed to serialize properties");
+
+        // Verify the JSON structure
+        assert!(json.contains("\"location\":\"gs://my-bucket/namespace\""));
+        assert!(json.contains("\"gcp-region\":\"us\""));
+
+        // Verify it can be deserialized back
+        let deserialized: HashMap<String, String> =
+            serde_json::from_str(&json).expect("Failed to deserialize properties");
+        assert_eq!(deserialized.len(), 2);
+        assert_eq!(deserialized.get("location"), Some(&"gs://my-bucket/namespace".to_string()));
+        assert_eq!(deserialized.get("gcp-region"), Some(&"us".to_string()));
+    }
+
+    /// Test that empty properties map produces empty JSON string.
+    #[test]
+    fn test_empty_namespace_properties() {
+        let properties: HashMap<String, String> = HashMap::new();
+        let json = serde_json::to_string(&properties).expect("Failed to serialize properties");
+        assert_eq!(json, "{}");
+
+        // Verify it can be deserialized back
+        let deserialized: HashMap<String, String> =
+            serde_json::from_str(&json).expect("Failed to deserialize properties");
+        assert!(deserialized.is_empty());
+    }
+
+    /// Test that properties with special characters are handled correctly.
+    #[test]
+    fn test_namespace_properties_with_special_chars() {
+        let mut properties = HashMap::new();
+        properties.insert("key-with-dash".to_string(), "value with spaces".to_string());
+        properties.insert(
+            "location".to_string(),
+            "gs://my-bucket/path/with/slashes".to_string(),
+        );
+
+        let json = serde_json::to_string(&properties).expect("Failed to serialize properties");
+
+        // Verify it can be deserialized back correctly
+        let deserialized: HashMap<String, String> =
+            serde_json::from_str(&json).expect("Failed to deserialize properties");
+        assert_eq!(
+            deserialized.get("key-with-dash"),
+            Some(&"value with spaces".to_string())
+        );
+        assert_eq!(
+            deserialized.get("location"),
+            Some(&"gs://my-bucket/path/with/slashes".to_string())
+        );
+    }
+
+    /// Test that BigQuery namespace properties (from the user's use case) are correctly formatted.
+    #[test]
+    fn test_bigquery_namespace_properties() {
+        let mut properties = HashMap::new();
+        properties.insert("gcp-region".to_string(), "us".to_string());
+        properties.insert(
+            "location".to_string(),
+            "gs://rainbow-data-production-iceberg/test_namespace_bq_connection".to_string(),
+        );
+
+        let json = serde_json::to_string(&properties).expect("Failed to serialize properties");
+
+        // Verify the JSON can be parsed by Java
+        let deserialized: HashMap<String, String> =
+            serde_json::from_str(&json).expect("Failed to deserialize properties");
+        assert_eq!(deserialized.len(), 2);
+        assert_eq!(deserialized.get("gcp-region"), Some(&"us".to_string()));
+        assert_eq!(
+            deserialized.get("location"),
+            Some(&"gs://rainbow-data-production-iceberg/test_namespace_bq_connection".to_string())
+        );
+    }
+
+    /// Test that CreateTableRequest serializes properties correctly.
+    #[test]
+    fn test_create_table_request_serialization() {
+        use iceberg::spec::{NestedField, PrimitiveType, Type};
+        use std::sync::Arc;
+
+        // Create a simple schema
+        let field = Arc::new(NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long))
+            .with_doc("Test ID field"));
+        let schema = Schema::builder().with_schema_id(1).with_fields(vec![field]).build().unwrap();
+
+        // Create table properties
+        let mut properties = HashMap::new();
+        properties.insert("bq_connection".to_string(), "projects/my-project/locations/us/connections/iceberg_conn".to_string());
+        properties.insert("format-version".to_string(), "2".to_string());
+
+        // Create TableCreation with properties
+        let table_creation = TableCreation::builder()
+            .name("test_table".to_string())
+            .schema(schema)
+            .properties(properties.clone())
+            .build();
+
+        // Convert to CreateTableRequest and serialize
+        let request = CreateTableRequest::from(&table_creation);
+        let json = serde_json::to_string(&request).expect("Failed to serialize CreateTableRequest");
+
+        // Verify properties are in the JSON
+        assert!(json.contains("\"bq_connection\""));
+        assert!(json.contains("projects/my-project/locations/us/connections/iceberg_conn"));
+        assert!(json.contains("\"format-version\""));
+        assert!(json.contains("\"2\""));
+
+        // Verify properties are accessible from the request
+        assert_eq!(request.properties.len(), 2);
+        assert_eq!(
+            request.properties.get("bq_connection"),
+            Some(&"projects/my-project/locations/us/connections/iceberg_conn".to_string())
+        );
+        assert_eq!(request.properties.get("format-version"), Some(&"2".to_string()));
+    }
+
+    /// Test that empty table properties are handled correctly.
+    #[test]
+    fn test_create_table_request_empty_properties() {
+        use iceberg::spec::{NestedField, Type, PrimitiveType};
+        use std::sync::Arc;
+
+        // Create a simple schema
+        let field = Arc::new(NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long))
+            .with_doc("Test ID field"));
+        let schema = Schema::builder().with_schema_id(1).with_fields(vec![field]).build().unwrap();
+
+        // Create TableCreation with empty properties
+        let properties: HashMap<String, String> = HashMap::new();
+        let table_creation = TableCreation::builder()
+            .name("test_table".to_string())
+            .schema(schema)
+            .properties(properties)
+            .build();
+
+        // Convert to CreateTableRequest and serialize
+        let request = CreateTableRequest::from(&table_creation);
+        let json = serde_json::to_string(&request).expect("Failed to serialize CreateTableRequest");
+
+        // Verify properties field exists but is empty object
+        assert!(json.contains("\"properties\":{}"));
+
+        // Verify properties are empty
+        assert!(request.properties.is_empty());
     }
 }

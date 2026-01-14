@@ -18,8 +18,10 @@ package com.risingwave.connector.catalog;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import java.io.Closeable;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.catalog.Catalog;
@@ -126,6 +128,16 @@ public class JniCatalogWrapper {
      * @param namespaceStr The namespace to create.
      */
     public void createNamespace(String namespaceStr) {
+        createNamespace(namespaceStr, null);
+    }
+
+    /**
+     * Create a namespace in the catalog with properties.
+     *
+     * @param namespaceStr The namespace to create.
+     * @param propertiesJson The properties as JSON string (key-value pairs).
+     */
+    public void createNamespace(String namespaceStr, String propertiesJson) {
         Namespace namespace;
         if (namespaceStr == null) {
             namespace = Namespace.empty();
@@ -133,7 +145,17 @@ public class JniCatalogWrapper {
             namespace = Namespace.of(namespaceStr);
         }
         if (catalog instanceof SupportsNamespaces) {
-            ((SupportsNamespaces) catalog).createNamespace(namespace);
+            if (propertiesJson != null && !propertiesJson.isEmpty()) {
+                try {
+                    Map<String, String> properties = RESTObjectMapper.mapper()
+                        .readValue(propertiesJson, new TypeReference<Map<String, String>>() {});
+                    ((SupportsNamespaces) catalog).createNamespace(namespace, properties);
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to parse namespace properties", e);
+                }
+            } else {
+                ((SupportsNamespaces) catalog).createNamespace(namespace);
+            }
         }
     }
 
