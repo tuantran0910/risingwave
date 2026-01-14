@@ -16,13 +16,9 @@
 
 package com.risingwave.connector.catalog;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import java.util.HashMap;
-import java.util.Map;
-import org.apache.iceberg.catalog.TableIdentifier;
 import org.junit.Ignore;
 import org.junit.Test;
 
@@ -108,8 +104,9 @@ public class JniCatalogWrapperTest {
             catalog.createNamespace("test_namespace", "{invalid json}");
             fail("Should have thrown RuntimeException for invalid JSON");
         } catch (RuntimeException e) {
-            assertTrue("Exception should mention parsing failure",
-                e.getMessage().contains("Failed to parse namespace properties"));
+            assertTrue(
+                    "Exception should mention parsing failure",
+                    e.getMessage().contains("Failed to parse namespace properties"));
         }
     }
 }

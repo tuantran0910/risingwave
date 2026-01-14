@@ -147,8 +147,11 @@ public class JniCatalogWrapper {
         if (catalog instanceof SupportsNamespaces) {
             if (propertiesJson != null && !propertiesJson.isEmpty()) {
                 try {
-                    Map<String, String> properties = RESTObjectMapper.mapper()
-                        .readValue(propertiesJson, new TypeReference<Map<String, String>>() {});
+                    Map<String, String> properties =
+                            RESTObjectMapper.mapper()
+                                    .readValue(
+                                            propertiesJson,
+                                            new TypeReference<Map<String, String>>() {});
                     ((SupportsNamespaces) catalog).createNamespace(namespace, properties);
                 } catch (Exception e) {
                     throw new RuntimeException("Failed to parse namespace properties", e);
