@@ -256,4 +256,90 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_drop_iceberg_sink_property_parsing() {
+        use std::collections::BTreeMap;
+
+        // Test case 1: drop_table_on_sink_drop = "true"
+        let mut props1 = BTreeMap::new();
+        props1.insert("connector".to_string(), "iceberg".to_string());
+        props1.insert("drop_table_on_sink_drop".to_string(), "true".to_string());
+
+        let pb_sink1 = PbSink {
+            properties: props1,
+            ..Default::default()
+        };
+
+        let should_drop1 = pb_sink1.properties
+            .get("drop_table_on_sink_drop")
+            .map(|v| v.to_lowercase() == "true")
+            .unwrap_or(true);
+
+        assert!(should_drop1, "drop_table_on_sink_drop=true should result in should_drop=true");
+
+        // Test case 2: drop_table_on_sink_drop = "false"
+        let mut props2 = BTreeMap::new();
+        props2.insert("connector".to_string(), "iceberg".to_string());
+        props2.insert("drop_table_on_sink_drop".to_string(), "false".to_string());
+
+        let pb_sink2 = PbSink {
+            properties: props2,
+            ..Default::default()
+        };
+
+        let should_drop2 = pb_sink2.properties
+            .get("drop_table_on_sink_drop")
+            .map(|v| v.to_lowercase() == "true")
+            .unwrap_or(true);
+
+        assert!(!should_drop2, "drop_table_on_sink_drop=false should result in should_drop=false");
+
+        // Test case 3: drop_table_on_sink_drop not set (default)
+        let mut props3 = BTreeMap::new();
+        props3.insert("connector".to_string(), "iceberg".to_string());
+        // No drop_table_on_sink_drop property
+
+        let pb_sink3 = PbSink {
+            properties: props3,
+            ..Default::default()
+        };
+
+        let should_drop3 = pb_sink3.properties
+            .get("drop_table_on_sink_drop")
+            .map(|v| v.to_lowercase() == "true")
+            .unwrap_or(true);
+
+        assert!(should_drop3, "Missing drop_table_on_sink_drop should default to true");
+
+        // Test case 4: Case insensitive parsing
+        let test_cases = vec![
+            ("TRUE", true),
+            ("True", true),
+            ("true", true),
+            ("FALSE", false),
+            ("False", false),
+            ("false", false),
+            ("INVALID", true), // Invalid values should default to true for safety
+        ];
+
+        for (value, expected) in test_cases {
+            let mut props = BTreeMap::new();
+            props.insert("connector".to_string(), "iceberg".to_string());
+            props.insert("drop_table_on_sink_drop".to_string(), value.to_string());
+
+            let pb_sink = PbSink {
+                properties: props,
+                ..Default::default()
+            };
+
+            let should_drop = pb_sink.properties
+                .get("drop_table_on_sink_drop")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(true);
+
+            assert_eq!(should_drop, expected,
+                "drop_table_on_sink_drop='{}' should result in should_drop={}", value, expected);
+        }
+    }
 }

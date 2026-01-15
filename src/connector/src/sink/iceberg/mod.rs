@@ -733,6 +733,13 @@ async fn create_table_if_not_exists_impl(config: &IcebergConfig, param: &SinkPar
 
         // Build table properties
         let mut table_properties = HashMap::new();
+
+        // Add RisingWave marker property to identify tables created by RisingWave
+        table_properties.insert(
+            "risingwave.created_by".to_owned(),
+            "true".to_owned(),
+        );
+
         if let Some(table_props_str) = &config.table_properties {
             for pair in table_props_str.split(';') {
                 let pair = pair.trim();

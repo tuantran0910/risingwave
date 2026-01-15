@@ -1241,21 +1241,49 @@ impl DdlController {
                 IcebergSink::try_from(sink_param).expect("Iceberg sink should be valid");
             if let Ok(iceberg_catalog) = iceberg_sink.config.create_catalog().await {
                 let table_identifier = iceberg_sink.config.full_table_name().unwrap();
-                tracing::info!(
-                    "dropping iceberg table {} for dropped sink",
-                    table_identifier
-                );
 
-                let _ = iceberg_catalog
-                    .drop_table(&table_identifier)
-                    .await
-                    .inspect_err(|err| {
-                        tracing::error!(
-                            "failed to drop iceberg table {} during cleanup: {}",
+                // Check if this table was created by RisingWave before attempting to drop it
+                match iceberg_catalog.load_table(&table_identifier).await {
+                    Ok(table) => {
+                        let metadata = table.metadata();
+                        let is_created_by_risingwave = metadata
+                            .properties()
+                            .get("risingwave.created_by")
+                            .map(|v| v == "true")
+                            .unwrap_or(false);
+
+                        if is_created_by_risingwave {
+                            tracing::info!(
+                                "dropping iceberg table {} for dropped sink (created by RisingWave)",
+                                table_identifier
+                            );
+
+                            let _ = iceberg_catalog
+                                .drop_table(&table_identifier)
+                                .await
+                                .inspect_err(|err| {
+                                    tracing::error!(
+                                        "failed to drop iceberg table {} during cleanup: {}",
+                                        table_identifier,
+                                        err.as_report()
+                                    );
+                                });
+                        } else {
+                            tracing::info!(
+                                "skipping iceberg table {} drop - not created by RisingWave",
+                                table_identifier
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "failed to load iceberg table {} for cleanup check: {}",
                             table_identifier,
                             err.as_report()
                         );
-                    });
+                        // If we can't load the table to check, err on the side of caution and don't drop
+                    }
+                }
             }
         }
 

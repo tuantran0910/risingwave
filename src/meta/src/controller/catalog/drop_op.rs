@@ -206,7 +206,8 @@ impl CatalogController {
             .filter(|obj| obj.obj_type == ObjectType::Table || obj.obj_type == ObjectType::Index)
             .map(|obj| obj.oid.as_table_id());
 
-        let removed_iceberg_table_sinks: Vec<PbSink> = Sink::find()
+        // Find auto-generated Iceberg engine sinks (always clean up their tables)
+        let mut removed_iceberg_table_sinks: Vec<PbSink> = Sink::find()
             .find_also_related(Object)
             .filter(
                 sink::Column::SinkId
@@ -218,6 +219,38 @@ impl CatalogController {
             .into_iter()
             .map(|(sink, obj)| ObjectModel(sink, obj.unwrap()).into())
             .collect();
+
+        // Also find regular Iceberg sinks that don't have the auto-generated prefix
+        let additional_iceberg_sinks: Vec<PbSink> = Sink::find()
+            .find_also_related(Object)
+            .filter(sink::Column::SinkId.is_in(removed_object_ids.clone()))
+            .all(&txn)
+            .await?
+            .into_iter()
+            .filter_map(|(sink, obj)| {
+                let sink_model = ObjectModel(sink, obj.unwrap());
+                let pb_sink: PbSink = sink_model.into();
+
+                // Check if this is an Iceberg sink that should have table cleanup
+                if let Some(connector) = pb_sink.properties.get("connector") {
+                    if connector.to_lowercase() == "iceberg" {
+                        // Check the drop_table_on_sink_drop property
+                        // Default to true if not specified (for backward compatibility)
+                        let should_drop_table = pb_sink.properties
+                            .get("drop_table_on_sink_drop")
+                            .map(|v| v.to_lowercase() == "true")
+                            .unwrap_or(true);
+
+                        if should_drop_table {
+                            return Some(pb_sink);
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        removed_iceberg_table_sinks.extend(additional_iceberg_sinks);
 
         let removed_streaming_job_ids: Vec<JobId> = StreamingJob::find()
             .select_only()

@@ -647,6 +647,11 @@ IcebergConfig:
     field_type: bool
     required: false
     default: Default::default
+  - name: drop_table_on_sink_drop
+    field_type: bool
+    comments: Whether to drop the Iceberg table when dropping the sink. Defaults to true for tables created by RisingWave, false for existing tables.
+    required: false
+    default: Default::default
   - name: is_exactly_once
     field_type: bool
     comments: Whether it is `exactly_once`, the default is true.
