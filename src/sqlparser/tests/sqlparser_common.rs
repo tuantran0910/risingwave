@@ -4198,3 +4198,66 @@ fn parse_alter_fragment_set_parallelism() {
         _ => panic!("unexpected statement kind"),
     }
 }
+
+#[test]
+fn parse_multi_column_comments() {
+    // Multiple column comments in one statement (RisingWave extension)
+    match verified_stmt("COMMENT ON COLUMN t.a IS 'col a', COLUMN t.b IS 'col b'") {
+        Statement::Comment { entries } => {
+            assert_eq!(2, entries.len());
+            assert_eq!(CommentObject::Column, entries[0].object_type);
+            assert_eq!("t.a", entries[0].object_name.to_string());
+            assert_eq!(Some("col a".to_string()), entries[0].comment);
+            assert_eq!(CommentObject::Column, entries[1].object_type);
+            assert_eq!("t.b", entries[1].object_name.to_string());
+            assert_eq!(Some("col b".to_string()), entries[1].comment);
+        }
+        _ => unreachable!(),
+    }
+
+    // Mixed column and table comments in one statement (RisingWave extension)
+    match verified_stmt("COMMENT ON COLUMN t.a IS 'col a', TABLE t IS 'table t'") {
+        Statement::Comment { entries } => {
+            assert_eq!(2, entries.len());
+            assert_eq!(CommentObject::Column, entries[0].object_type);
+            assert_eq!("t.a", entries[0].object_name.to_string());
+            assert_eq!(Some("col a".to_string()), entries[0].comment);
+            assert_eq!(CommentObject::Table, entries[1].object_type);
+            assert_eq!("t", entries[1].object_name.to_string());
+            assert_eq!(Some("table t".to_string()), entries[1].comment);
+        }
+        _ => unreachable!(),
+    }
+
+    // Three column comments in one statement
+    match verified_stmt("COMMENT ON COLUMN t.a IS 'a', COLUMN t.b IS 'b', COLUMN t.c IS 'c'") {
+        Statement::Comment { entries } => {
+            assert_eq!(3, entries.len());
+            for (i, entry) in entries.iter().enumerate() {
+                assert_eq!(CommentObject::Column, entry.object_type);
+                let expected_col = match i {
+                    0 => "t.a",
+                    1 => "t.b",
+                    2 => "t.c",
+                    _ => unreachable!(),
+                };
+                assert_eq!(expected_col, entry.object_name.to_string());
+                assert_eq!(
+                    Some(expected_col.split('.').last().unwrap().to_string()),
+                    entry.comment
+                );
+            }
+        }
+        _ => unreachable!(),
+    }
+
+    // Multiple comments with NULL
+    match verified_stmt("COMMENT ON COLUMN t.a IS 'col a', COLUMN t.b IS NULL") {
+        Statement::Comment { entries } => {
+            assert_eq!(2, entries.len());
+            assert_eq!(Some("col a".to_string()), entries[0].comment);
+            assert_eq!(None, entries[1].comment);
+        }
+        _ => unreachable!(),
+    }
+}

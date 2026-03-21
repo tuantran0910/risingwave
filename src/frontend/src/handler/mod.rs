@@ -1572,11 +1572,7 @@ pub async fn handle(
         } => transaction::handle_set(handler_args, modes, snapshot, session).await,
         Statement::CancelJobs(jobs) => handle_cancel(handler_args, jobs).await,
         Statement::Kill(worker_process_id) => handle_kill(handler_args, worker_process_id).await,
-        Statement::Comment {
-            object_type,
-            object_name,
-            comment,
-        } => comment::handle_comment(handler_args, object_type, object_name, comment).await,
+        Statement::Comment { entries } => comment::handle_comment(handler_args, entries).await,
         Statement::Use { db_name } => use_db::handle_use_db(handler_args, db_name),
         Statement::Prepare {
             name,

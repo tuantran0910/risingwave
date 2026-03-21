@@ -539,10 +539,8 @@ impl MetaClient {
             .ok_or_else(|| anyhow!("wait version not set"))?)
     }
 
-    pub async fn comment_on(&self, comment: PbComment) -> Result<WaitVersion> {
-        let request = CommentOnRequest {
-            comment: Some(comment),
-        };
+    pub async fn comment_on(&self, comments: Vec<PbComment>) -> Result<WaitVersion> {
+        let request = CommentOnRequest { comments };
         let resp = self.inner.comment_on(request).await?;
         Ok(resp
             .version

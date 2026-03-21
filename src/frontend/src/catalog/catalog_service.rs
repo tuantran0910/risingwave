@@ -168,7 +168,7 @@ pub trait CatalogWriter: Send + Sync {
         payload: Vec<u8>,
     ) -> Result<()>;
 
-    async fn comment_on(&self, comment: PbComment) -> Result<()>;
+    async fn comment_on(&self, comments: Vec<PbComment>) -> Result<()>;
 
     async fn drop_table(
         &self,
@@ -518,8 +518,8 @@ impl CatalogWriter for CatalogWriterImpl {
         self.wait_version(version).await
     }
 
-    async fn comment_on(&self, comment: PbComment) -> Result<()> {
-        let version = self.meta_client.comment_on(comment).await?;
+    async fn comment_on(&self, comments: Vec<PbComment>) -> Result<()> {
+        let version = self.meta_client.comment_on(comments).await?;
         self.wait_version(version).await
     }
 

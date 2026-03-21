@@ -6202,8 +6202,7 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_comment(&mut self) -> ModalResult<Statement> {
-        self.expect_keyword(Keyword::ON)?;
+    fn parse_comment_entry(&mut self) -> ModalResult<CommentEntry> {
         let checkpoint = *self;
         let token = self.next_token();
 
@@ -6216,7 +6215,7 @@ impl Parser<'_> {
                 let object_name = self.parse_object_name()?;
                 (CommentObject::Table, object_name)
             }
-            _ => self.expected_at(checkpoint, "comment object_type")?,
+            _ => self.expected_at(checkpoint, "COLUMN or TABLE")?,
         };
 
         self.expect_keyword(Keyword::IS)?;
@@ -6225,11 +6224,18 @@ impl Parser<'_> {
         } else {
             Some(self.parse_literal_string()?)
         };
-        Ok(Statement::Comment {
+
+        Ok(CommentEntry {
             object_type,
             object_name,
             comment,
         })
+    }
+
+    fn parse_comment(&mut self) -> ModalResult<Statement> {
+        self.expect_keyword(Keyword::ON)?;
+        let entries = self.parse_comma_separated(Parser::parse_comment_entry)?;
+        Ok(Statement::Comment { entries })
     }
 
     fn parse_use(&mut self) -> ModalResult<Statement> {

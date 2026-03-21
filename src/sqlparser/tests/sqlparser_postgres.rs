@@ -699,40 +699,38 @@ fn test_transaction_statement() {
 
 #[test]
 fn parse_comments() {
+    // Single column comment
     match verified_stmt("COMMENT ON COLUMN tab.name IS 'comment'") {
-        Statement::Comment {
-            object_type,
-            object_name,
-            comment: Some(comment),
-        } => {
-            assert_eq!("comment", comment);
-            assert_eq!("tab.name", object_name.to_string());
-            assert_eq!(CommentObject::Column, object_type);
+        Statement::Comment { entries } => {
+            assert_eq!(1, entries.len());
+            let entry = &entries[0];
+            assert_eq!(CommentObject::Column, entry.object_type);
+            assert_eq!("tab.name", entry.object_name.to_string());
+            assert_eq!(Some("comment".to_string()), entry.comment);
         }
         _ => unreachable!(),
     }
 
+    // Single table comment
     match verified_stmt("COMMENT ON TABLE public.tab IS 'comment'") {
-        Statement::Comment {
-            object_type,
-            object_name,
-            comment: Some(comment),
-        } => {
-            assert_eq!("comment", comment);
-            assert_eq!("public.tab", object_name.to_string());
-            assert_eq!(CommentObject::Table, object_type);
+        Statement::Comment { entries } => {
+            assert_eq!(1, entries.len());
+            let entry = &entries[0];
+            assert_eq!(CommentObject::Table, entry.object_type);
+            assert_eq!("public.tab", entry.object_name.to_string());
+            assert_eq!(Some("comment".to_string()), entry.comment);
         }
         _ => unreachable!(),
     }
 
+    // NULL comment
     match verified_stmt("COMMENT ON TABLE public.tab IS NULL") {
-        Statement::Comment {
-            object_type,
-            object_name,
-            comment: None,
-        } => {
-            assert_eq!("public.tab", object_name.to_string());
-            assert_eq!(CommentObject::Table, object_type);
+        Statement::Comment { entries } => {
+            assert_eq!(1, entries.len());
+            let entry = &entries[0];
+            assert_eq!(CommentObject::Table, entry.object_type);
+            assert_eq!("public.tab", entry.object_name.to_string());
+            assert_eq!(None, entry.comment);
         }
         _ => unreachable!(),
     }

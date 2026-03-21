@@ -183,7 +183,7 @@ pub enum DdlCommand {
     CreateSecret(Secret),
     AlterSecret(Secret),
     DropSecret(SecretId, DropMode),
-    CommentOn(Comment),
+    CommentOn(Vec<Comment>),
     CreateSubscription(Subscription),
     DropSubscription(SubscriptionId, DropMode),
     AlterSubscriptionRetention {
@@ -224,7 +224,15 @@ impl DdlCommand {
             DdlCommand::CreateSecret(secret) => Left(secret.name.clone()),
             DdlCommand::AlterSecret(secret) => Left(secret.name.clone()),
             DdlCommand::DropSecret(id, _) => Right(id.as_object_id()),
-            DdlCommand::CommentOn(comment) => Right(comment.table_id.into()),
+            DdlCommand::CommentOn(comments) => {
+                // Use the first comment's table_id for identification
+                Right(
+                    comments
+                        .first()
+                        .map(|c| c.table_id.as_object_id())
+                        .unwrap_or_default(),
+                )
+            }
             DdlCommand::CreateSubscription(subscription) => Left(subscription.name.clone()),
             DdlCommand::DropSubscription(id, _) => Right(id.as_object_id()),
             DdlCommand::AlterSubscriptionRetention {
@@ -466,7 +474,7 @@ impl DdlController {
                 DdlCommand::AlterNonSharedSource(source) => {
                     ctrl.alter_non_shared_source(source).await
                 }
-                DdlCommand::CommentOn(comment) => ctrl.comment_on(comment).await,
+                DdlCommand::CommentOn(comments) => ctrl.comment_on(comments).await,
                 DdlCommand::CreateSubscription(subscription) => {
                     ctrl.create_subscription(subscription).await
                 }
@@ -2373,10 +2381,10 @@ impl DdlController {
         )))
     }
 
-    async fn comment_on(&self, comment: Comment) -> MetaResult<NotificationVersion> {
+    async fn comment_on(&self, comments: Vec<Comment>) -> MetaResult<NotificationVersion> {
         self.metadata_manager
             .catalog_controller
-            .comment_on(comment)
+            .comment_on(comments)
             .await
     }
 

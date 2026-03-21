@@ -452,7 +452,7 @@ impl CatalogWriter for MockCatalogWriter {
         unreachable!()
     }
 
-    async fn comment_on(&self, _comment: PbComment) -> Result<()> {
+    async fn comment_on(&self, _comments: Vec<PbComment>) -> Result<()> {
         unreachable!()
     }
 

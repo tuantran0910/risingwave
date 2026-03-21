@@ -626,7 +626,7 @@ message WaitResponse {
 }
 
 message CommentOnRequest {
-  catalog.Comment comment = 1;
+  repeated catalog.Comment comments = 1;
 }
 
 message CommentOnResponse {

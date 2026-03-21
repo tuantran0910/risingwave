@@ -63,3 +63,59 @@ t  rw_tables  2  Vivamus fermentum
 
 statement ok
 drop table t;
+
+# Test multi-column comments
+statement ok
+create table t2(x int, y text, z date);
+
+# Single column comment (backward compatibility)
+statement ok
+comment on column t2.x is 'column x';
+
+# Multiple column comments in one statement
+statement ok
+comment on column t2.y is 'column y', column t2.z is 'column z';
+
+query TIIIT
+SELECT
+    c.relname,
+    (
+        SELECT relname FROM pg_catalog.pg_class WHERE oid = d.classoid
+    ) AS classoid,
+    d.objsubid,
+    d.description
+FROM
+    pg_catalog.pg_description d
+    JOIN pg_catalog.pg_class c
+        ON d.objoid = c.oid
+ORDER BY d.objsubid;
+----
+t2  rw_tables  1  column x
+t2  rw_tables  2  column y
+t2  rw_tables  3  column z
+
+# Mixed table and column comments in one statement
+statement ok
+comment on column t2.x is 'updated x', table t2 is 'table t2';
+
+query TIIIT
+SELECT
+    c.relname,
+    (
+        SELECT relname FROM pg_catalog.pg_class WHERE oid = d.classoid
+    ) AS classoid,
+    d.objsubid,
+    d.description
+FROM
+    pg_catalog.pg_description d
+    JOIN pg_catalog.pg_class c
+        ON d.objoid = c.oid
+ORDER BY d.objsubid;
+----
+t2  rw_tables  0  table t2
+t2  rw_tables  1  updated x
+t2  rw_tables  2  column y
+t2  rw_tables  3  column z
+
+statement ok
+drop table t2;

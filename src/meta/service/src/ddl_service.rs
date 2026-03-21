@@ -1029,17 +1029,21 @@ impl DdlService for DdlServiceImpl {
         request: Request<CommentOnRequest>,
     ) -> Result<Response<CommentOnResponse>, Status> {
         let req = request.into_inner();
-        let comment = req.get_comment()?.clone();
+        let comments: Vec<Comment> = req
+            .comments
+            .into_iter()
+            .map(|c| Comment {
+                table_id: c.table_id,
+                schema_id: c.schema_id,
+                database_id: c.database_id,
+                column_index: c.column_index,
+                description: c.description,
+            })
+            .collect();
 
         let version = self
             .ddl_controller
-            .run_command(DdlCommand::CommentOn(Comment {
-                table_id: comment.table_id,
-                schema_id: comment.schema_id,
-                database_id: comment.database_id,
-                column_index: comment.column_index,
-                description: comment.description,
-            }))
+            .run_command(DdlCommand::CommentOn(comments))
             .await?;
 
         Ok(Response::new(CommentOnResponse {

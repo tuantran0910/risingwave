@@ -613,60 +613,117 @@ impl CatalogController {
         Ok(dirty_associated_source_ids)
     }
 
-    pub async fn comment_on(&self, comment: PbComment) -> MetaResult<NotificationVersion> {
+    pub async fn comment_on(&self, comments: Vec<PbComment>) -> MetaResult<NotificationVersion> {
+        use crate::error::bail_invalid_parameter;
+
+        if comments.is_empty() {
+            bail_invalid_parameter!("comments cannot be empty");
+        }
+
         let inner = self.inner.write().await;
         let txn = inner.db.begin().await?;
-        ensure_object_id(ObjectType::Database, comment.database_id, &txn).await?;
-        ensure_object_id(ObjectType::Schema, comment.schema_id, &txn).await?;
-        let (table_obj, streaming_job) = Object::find_by_id(comment.table_id)
-            .find_also_related(StreamingJob)
-            .one(&txn)
-            .await?
-            .ok_or_else(|| MetaError::catalog_id_not_found("object", comment.table_id))?;
 
-        let table = if let Some(col_idx) = comment.column_index {
-            let columns: ColumnCatalogArray = Table::find_by_id(comment.table_id)
+        // Validate all comments first
+        for comment in &comments {
+            ensure_object_id(ObjectType::Database, comment.database_id, &txn).await?;
+            ensure_object_id(ObjectType::Schema, comment.schema_id, &txn).await?;
+        }
+
+        // Group comments by table_id to minimize table updates
+        let mut table_comments: HashMap<TableId, Vec<&PbComment>> = HashMap::new();
+        for comment in &comments {
+            table_comments
+                .entry(comment.table_id)
+                .or_default()
+                .push(comment);
+        }
+
+        // Process all comments in single transaction
+        let mut updated_tables = Vec::new();
+        for (table_id, table_comment_list) in table_comments {
+            let (table_obj, streaming_job) = Object::find_by_id(table_id)
+                .find_also_related(StreamingJob)
+                .one(&txn)
+                .await?
+                .ok_or_else(|| MetaError::catalog_id_not_found("object", table_id))?;
+
+            // Load columns once
+            let columns: ColumnCatalogArray = Table::find_by_id(table_id)
                 .select_only()
                 .column(table::Column::Columns)
                 .into_tuple()
                 .one(&txn)
                 .await?
-                .ok_or_else(|| MetaError::catalog_id_not_found("table", comment.table_id))?;
+                .ok_or_else(|| MetaError::catalog_id_not_found("table", table_id))?;
             let mut pb_columns = columns.to_protobuf();
 
-            let column = pb_columns
-                .get_mut(col_idx as usize)
-                .ok_or_else(|| MetaError::catalog_id_not_found("column", col_idx))?;
-            let column_desc = column.column_desc.as_mut().ok_or_else(|| {
-                anyhow!(
-                    "column desc at index {} for table id {} not found",
-                    col_idx,
-                    comment.table_id
-                )
-            })?;
-            column_desc.description = comment.description;
-            table::ActiveModel {
-                table_id: Set(comment.table_id),
-                columns: Set(pb_columns.into()),
-                ..Default::default()
+            let mut table_description = None;
+            let mut columns_modified = false;
+
+            for comment in table_comment_list {
+                if let Some(col_idx) = comment.column_index {
+                    // Column comment
+                    let column = pb_columns
+                        .get_mut(col_idx as usize)
+                        .ok_or_else(|| MetaError::catalog_id_not_found("column", col_idx))?;
+                    let column_desc = column.column_desc.as_mut().ok_or_else(|| {
+                        anyhow!(
+                            "column desc at index {} for table id {} not found",
+                            col_idx,
+                            table_id
+                        )
+                    })?;
+                    column_desc.description = comment.description.clone();
+                    columns_modified = true;
+                } else {
+                    // Table comment
+                    table_description = comment.description.clone();
+                }
             }
-            .update(&txn)
-            .await?
-        } else {
-            table::ActiveModel {
-                table_id: Set(comment.table_id),
-                description: Set(comment.description),
-                ..Default::default()
-            }
-            .update(&txn)
-            .await?
-        };
+
+            let table = if columns_modified {
+                table::ActiveModel {
+                    table_id: Set(table_id),
+                    columns: Set(pb_columns.into()),
+                    description: Set(table_description),
+                    ..Default::default()
+                }
+                .update(&txn)
+                .await?
+            } else if table_description.is_some() {
+                table::ActiveModel {
+                    table_id: Set(table_id),
+                    description: Set(table_description),
+                    ..Default::default()
+                }
+                .update(&txn)
+                .await?
+            } else {
+                // No changes needed, just fetch the table
+                Table::find_by_id(table_id)
+                    .one(&txn)
+                    .await?
+                    .ok_or_else(|| MetaError::catalog_id_not_found("table", table_id))?
+            };
+
+            updated_tables.push(ObjectModel(table, table_obj, streaming_job));
+        }
+
         txn.commit().await?;
 
+        // Single notification for all updates
         let version = self
-            .notify_frontend_relation_info(
+            .notify_frontend(
                 NotificationOperation::Update,
-                PbObjectInfo::Table(ObjectModel(table, table_obj, streaming_job).into()),
+                NotificationInfo::ObjectGroup(PbObjectGroup {
+                    objects: updated_tables
+                        .into_iter()
+                        .map(|t| PbObject {
+                            object_info: Some(PbObjectInfo::Table(t.into())),
+                        })
+                        .collect(),
+                    dependencies: vec![],
+                }),
             )
             .await;
 

@@ -1129,6 +1129,26 @@ impl fmt::Display for CommentObject {
     }
 }
 
+/// A single entry in a COMMENT ON statement.
+/// Supports multiple entries in one statement for batch commenting.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CommentEntry {
+    pub object_type: CommentObject,
+    pub object_name: ObjectName,
+    pub comment: Option<String>,
+}
+
+impl fmt::Display for CommentEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} IS ", self.object_type, self.object_name)?;
+        if let Some(c) = &self.comment {
+            write!(f, "'{}'", c)
+        } else {
+            write!(f, "NULL")
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExplainType {
     Logical,
@@ -1587,11 +1607,9 @@ pub enum Statement {
     },
     /// `COMMENT ON ...`
     ///
-    /// Note: this is a PostgreSQL-specific statement.
+    /// Supports multiple entries for batch commenting.
     Comment {
-        object_type: CommentObject,
-        object_name: ObjectName,
-        comment: Option<String>,
+        entries: Vec<CommentEntry>,
     },
     /// `COMMIT [ TRANSACTION | WORK ] [ AND [ NO ] CHAIN ]`
     Commit {
@@ -2429,17 +2447,15 @@ impl Statement {
                 write!(f, "AS ")?;
                 statement.fmt_unchecked(f)
             }
-            Statement::Comment {
-                object_type,
-                object_name,
-                comment,
-            } => {
-                write!(f, "COMMENT ON {} {} IS ", object_type, object_name)?;
-                if let Some(c) = comment {
-                    write!(f, "'{}'", c)
-                } else {
-                    write!(f, "NULL")
+            Statement::Comment { entries } => {
+                write!(f, "COMMENT ON ")?;
+                for (i, entry) in entries.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", entry)?;
                 }
+                Ok(())
             }
             Statement::CreateUser(statement) => {
                 write!(f, "CREATE USER {}", statement)
