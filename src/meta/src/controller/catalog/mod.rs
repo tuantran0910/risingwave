@@ -657,7 +657,7 @@ impl CatalogController {
                 .ok_or_else(|| MetaError::catalog_id_not_found("table", table_id))?;
             let mut pb_columns = columns.to_protobuf();
 
-            let mut table_description = None;
+            let mut table_description: Option<Option<String>> = None; // None = not set, Some(value) = set
             let mut columns_modified = false;
 
             for comment in table_comment_list {
@@ -677,23 +677,37 @@ impl CatalogController {
                     columns_modified = true;
                 } else {
                     // Table comment
-                    table_description = comment.description.clone();
+                    table_description = Some(comment.description.clone());
                 }
             }
 
             let table = if columns_modified {
-                table::ActiveModel {
-                    table_id: Set(table_id),
-                    columns: Set(pb_columns.into()),
-                    description: Set(table_description),
-                    ..Default::default()
+                // We have column modifications
+                if let Some(desc) = table_description {
+                    // Also have a table comment in the same batch
+                    table::ActiveModel {
+                        table_id: Set(table_id),
+                        columns: Set(pb_columns.into()),
+                        description: Set(desc),
+                        ..Default::default()
+                    }
+                    .update(&txn)
+                    .await?
+                } else {
+                    // Only column comments, preserve existing table description
+                    table::ActiveModel {
+                        table_id: Set(table_id),
+                        columns: Set(pb_columns.into()),
+                        ..Default::default()
+                    }
+                    .update(&txn)
+                    .await?
                 }
-                .update(&txn)
-                .await?
-            } else if table_description.is_some() {
+            } else if let Some(desc) = table_description {
+                // Only table comment
                 table::ActiveModel {
                     table_id: Set(table_id),
-                    description: Set(table_description),
+                    description: Set(desc),
                     ..Default::default()
                 }
                 .update(&txn)
