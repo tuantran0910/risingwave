@@ -522,6 +522,13 @@ pub enum Command {
 
     ConnectorPropsChange(ConnectorPropsChange),
 
+    /// `SinkCommentChange` propagates a COMMENT ON TABLE/COLUMN change to an Iceberg sink
+    /// by sending an `UpdateCommentsOp` schema change mutation through the barrier.
+    SinkCommentChange {
+        sink_id: u32,
+        schema_change: PbSinkSchemaChange,
+    },
+
     /// `Refresh` command generates a barrier to refresh a table by truncating state
     /// and reloading data from source.
     Refresh {
@@ -613,6 +620,9 @@ impl std::fmt::Display for Command {
                 "AlterSubscriptionRetention: {subscription_id} -> {retention_second}"
             ),
             Command::ConnectorPropsChange(_) => write!(f, "ConnectorPropsChange"),
+            Command::SinkCommentChange { sink_id, .. } => {
+                write!(f, "SinkCommentChange: sink={sink_id}")
+            }
             Command::Refresh {
                 table_id,
                 associated_source_id,
@@ -1406,6 +1416,18 @@ impl Command {
                 })
             }
         }
+    }
+
+    /// Build the `SinkCommentChange` mutation.
+    /// Delivers an `UpdateCommentsOp` schema change to the specified sink via the barrier.
+    pub(super) fn sink_comment_change_to_mutation(
+        sink_id: u32,
+        schema_change: PbSinkSchemaChange,
+    ) -> Mutation {
+        Mutation::Update(UpdateMutation {
+            sink_schema_change: HashMap::from([(sink_id, schema_change)]),
+            ..Default::default()
+        })
     }
 
     /// Build the `RefreshStart` mutation.

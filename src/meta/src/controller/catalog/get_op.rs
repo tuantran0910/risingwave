@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use risingwave_common::catalog::ColumnCatalog;
+use risingwave_common::catalog::{ColumnCatalog, ICEBERG_SINK_PREFIX};
 use risingwave_common::id::JobId;
 use sea_orm::ConnectionTrait;
 
@@ -304,6 +304,92 @@ impl CatalogController {
                 ObjectModel(sink, obj.unwrap(), streaming_job).into()
             })
             .collect())
+    }
+
+    /// Returns `(is_iceberg_engine, table_name, columns)` for the given table.
+    /// Used to determine whether to propagate comments to Iceberg metadata.
+    pub async fn get_table_info_for_comment(
+        &self,
+        table_id: TableId,
+    ) -> MetaResult<(
+        bool,
+        String,
+        Vec<risingwave_pb::plan_common::PbColumnCatalog>,
+    )> {
+        let inner = self.inner.read().await;
+        let (table_model, obj) = Table::find_by_id(table_id)
+            .find_also_related(Object)
+            .one(&inner.db)
+            .await?
+            .ok_or_else(|| MetaError::catalog_id_not_found("table", table_id))?;
+        let _ = obj;
+        let is_iceberg_engine = matches!(table_model.engine, Some(table::Engine::Iceberg));
+        let table_name = table_model.name.clone();
+        let columns = table_model.columns.to_protobuf();
+        Ok((is_iceberg_engine, table_name, columns))
+    }
+
+    /// Returns all Iceberg sinks associated with the given table.
+    /// For Iceberg engine tables, returns the `__iceberg_sink_<name>` sink.
+    /// For standalone sinks with `auto_refresh_schema_from_table`, returns those
+    /// with `connector = 'iceberg'`.
+    pub async fn get_iceberg_sinks_for_table(
+        &self,
+        table_id: TableId,
+        database_id: DatabaseId,
+        schema_id: SchemaId,
+        table_name: &str,
+        is_iceberg_engine: bool,
+    ) -> MetaResult<Vec<(SinkId, DatabaseId)>> {
+        let inner = self.inner.read().await;
+        let mut result = Vec::new();
+
+        // For Iceberg engine table: find the associated __iceberg_sink_<name>
+        if is_iceberg_engine {
+            let iceberg_sink_name = format!("{}{}", ICEBERG_SINK_PREFIX, table_name);
+            let sink_id = Sink::find()
+                .inner_join(Object)
+                .select_only()
+                .column(sink::Column::SinkId)
+                .filter(
+                    object::Column::DatabaseId
+                        .eq(database_id)
+                        .and(object::Column::SchemaId.eq(schema_id))
+                        .and(sink::Column::Name.eq(iceberg_sink_name)),
+                )
+                .into_tuple::<SinkId>()
+                .one(&inner.db)
+                .await?;
+            if let Some(sink_id) = sink_id {
+                result.push((sink_id, database_id));
+            }
+        }
+
+        // For standalone sinks: find sinks with auto_refresh_schema_from_table pointing to this
+        // table, filtered to connector = 'iceberg'.
+        let standalone_sinks = Sink::find()
+            .find_also_related(Object)
+            .filter(sink::Column::AutoRefreshSchemaFromTable.eq(table_id))
+            .all(&inner.db)
+            .await?;
+        for (sink, obj) in standalone_sinks {
+            // Filter to Iceberg connector only
+            if sink
+                .properties
+                .0
+                .get("connector")
+                .map(|v| v == "iceberg")
+                .unwrap_or(false)
+            {
+                let sink_db_id = obj
+                    .as_ref()
+                    .and_then(|o| o.database_id)
+                    .unwrap_or(database_id);
+                result.push((sink.sink_id, sink_db_id));
+            }
+        }
+
+        Ok(result)
     }
 
     pub async fn get_sink_state_table_ids(&self, sink_id: SinkId) -> MetaResult<Vec<TableId>> {

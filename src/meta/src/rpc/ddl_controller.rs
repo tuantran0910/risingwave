@@ -58,9 +58,11 @@ use risingwave_pb::ddl_service::{
 };
 use risingwave_pb::meta::table_fragments::fragment::FragmentDistributionType as PbFragmentDistributionType;
 use risingwave_pb::plan_common::PbColumnCatalog;
+use risingwave_pb::stream_plan::sink_schema_change::Op as PbSinkSchemaChangeOp;
 use risingwave_pb::stream_plan::stream_node::NodeBody;
 use risingwave_pb::stream_plan::{
-    PbDispatchOutputMapping, PbStreamFragmentGraph, PbStreamNode, PbUpstreamSinkInfo,
+    PbDispatchOutputMapping, PbSinkColumnComment, PbSinkSchemaChange, PbSinkUpdateCommentsOp,
+    PbStreamFragmentGraph, PbStreamNode, PbUpstreamSinkInfo,
     StreamFragmentGraph as StreamFragmentGraphProto,
 };
 use risingwave_pb::telemetry::{PbTelemetryDatabaseObject, PbTelemetryEventStage};
@@ -2374,10 +2376,56 @@ impl DdlController {
     }
 
     async fn comment_on(&self, comment: Comment) -> MetaResult<NotificationVersion> {
-        self.metadata_manager
+        // Fetch table info before updating the catalog so we can propagate to Iceberg.
+        let table_info = self
+            .metadata_manager
             .catalog_controller
-            .comment_on(comment)
-            .await
+            .get_table_info_for_comment(comment.table_id)
+            .await;
+
+        let version = self
+            .metadata_manager
+            .catalog_controller
+            .comment_on(comment.clone())
+            .await?;
+
+        // Propagate comment to Iceberg table metadata asynchronously.
+        if let Ok((is_iceberg_engine, table_name, columns)) = table_info {
+            let iceberg_sinks = self
+                .metadata_manager
+                .catalog_controller
+                .get_iceberg_sinks_for_table(
+                    comment.table_id,
+                    comment.database_id,
+                    comment.schema_id,
+                    &table_name,
+                    is_iceberg_engine,
+                )
+                .await;
+            if let Ok(iceberg_sinks) = iceberg_sinks {
+                for (sink_id, database_id) in iceberg_sinks {
+                    let schema_change = build_comment_schema_change(&comment, &columns);
+                    if let Some(schema_change) = schema_change {
+                        if let Err(e) = self.stream_manager.barrier_scheduler.run_command_no_wait(
+                            database_id,
+                            Command::SinkCommentChange {
+                                sink_id: sink_id.as_raw_id(),
+                                schema_change,
+                            },
+                        ) {
+                            tracing::warn!(
+                                error = %e.as_report(),
+                                sink_id = %sink_id,
+                                table_id = %comment.table_id,
+                                "Failed to schedule Iceberg comment propagation, ignoring"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(version)
     }
 
     async fn alter_streaming_job_config(
@@ -2391,6 +2439,43 @@ impl DdlController {
             .alter_streaming_job_config(job_id, entries_to_add, keys_to_remove)
             .await
     }
+}
+
+/// Build a `PbSinkSchemaChange` containing `UpdateCommentsOp` from a `Comment`.
+/// Returns `None` if there are no comment changes to propagate (e.g., the column is hidden).
+fn build_comment_schema_change(
+    comment: &Comment,
+    columns: &[risingwave_pb::plan_common::PbColumnCatalog],
+) -> Option<PbSinkSchemaChange> {
+    let op = if let Some(col_idx) = comment.column_index {
+        // Column comment: find the column by index, skip hidden/internal columns.
+        let col = columns.get(col_idx as usize)?;
+        if col.is_hidden {
+            return None;
+        }
+        let col_name = col
+            .column_desc
+            .as_ref()
+            .map(|d| d.name.clone())
+            .unwrap_or_default();
+        PbSinkSchemaChangeOp::UpdateComments(PbSinkUpdateCommentsOp {
+            table_description: None,
+            column_comments: vec![PbSinkColumnComment {
+                column_name: col_name,
+                description: comment.description.clone(),
+            }],
+        })
+    } else {
+        // Table-level comment.
+        PbSinkSchemaChangeOp::UpdateComments(PbSinkUpdateCommentsOp {
+            table_description: comment.description.clone(),
+            column_comments: vec![],
+        })
+    };
+    Some(PbSinkSchemaChange {
+        original_schema: vec![],
+        op: Some(op),
+    })
 }
 
 fn report_create_object(
@@ -2576,5 +2661,131 @@ mod tests {
             result,
             Err(ref e) if matches!(e.inner(), MetaErrorInner::InvalidParameter(_))
         ));
+    }
+
+    mod comment_schema_change_tests {
+        use risingwave_pb::plan_common::{PbColumnCatalog, PbColumnDesc};
+        use risingwave_pb::stream_plan::sink_schema_change::Op;
+        use risingwave_pb::stream_plan::PbSinkUpdateCommentsOp;
+
+        use super::super::{build_comment_schema_change, Comment};
+
+        fn make_column(name: &str, is_hidden: bool) -> PbColumnCatalog {
+            PbColumnCatalog {
+                column_desc: Some(PbColumnDesc {
+                    name: name.to_owned(),
+                    ..Default::default()
+                }),
+                is_hidden,
+            }
+        }
+
+        fn make_comment(
+            column_index: Option<u32>,
+            description: Option<&str>,
+        ) -> Comment {
+            Comment {
+                table_id: 1.into(),
+                schema_id: 1.into(),
+                database_id: 1.into(),
+                column_index,
+                description: description.map(str::to_owned),
+            }
+        }
+
+        #[test]
+        fn test_table_comment_set() {
+            let comment = make_comment(None, Some("my table desc"));
+            let result = build_comment_schema_change(&comment, &[]);
+            let change = result.expect("should produce schema change");
+            match change.op.unwrap() {
+                Op::UpdateComments(PbSinkUpdateCommentsOp {
+                    table_description,
+                    column_comments,
+                }) => {
+                    assert_eq!(table_description, Some("my table desc".to_owned()));
+                    assert!(column_comments.is_empty());
+                }
+                other => panic!("expected UpdateComments, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_table_comment_removal() {
+            let comment = make_comment(None, None);
+            let result = build_comment_schema_change(&comment, &[]);
+            let change = result.expect("should produce schema change");
+            match change.op.unwrap() {
+                Op::UpdateComments(PbSinkUpdateCommentsOp {
+                    table_description,
+                    column_comments,
+                }) => {
+                    assert_eq!(table_description, None);
+                    assert!(column_comments.is_empty());
+                }
+                other => panic!("expected UpdateComments, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_column_comment_set() {
+            let columns = vec![
+                make_column("id", false),
+                make_column("name", false),
+            ];
+            let comment = make_comment(Some(1), Some("the name column"));
+            let result = build_comment_schema_change(&comment, &columns);
+            let change = result.expect("should produce schema change");
+            match change.op.unwrap() {
+                Op::UpdateComments(PbSinkUpdateCommentsOp {
+                    table_description,
+                    column_comments,
+                }) => {
+                    assert_eq!(table_description, None);
+                    assert_eq!(column_comments.len(), 1);
+                    assert_eq!(column_comments[0].column_name, "name");
+                    assert_eq!(
+                        column_comments[0].description,
+                        Some("the name column".to_owned())
+                    );
+                }
+                other => panic!("expected UpdateComments, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_column_comment_removal() {
+            let columns = vec![make_column("id", false)];
+            let comment = make_comment(Some(0), None);
+            let result = build_comment_schema_change(&comment, &columns);
+            let change = result.expect("should produce schema change");
+            match change.op.unwrap() {
+                Op::UpdateComments(PbSinkUpdateCommentsOp {
+                    column_comments, ..
+                }) => {
+                    assert_eq!(column_comments[0].description, None);
+                }
+                other => panic!("expected UpdateComments, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_hidden_column_returns_none() {
+            let columns = vec![
+                make_column("id", false),
+                make_column("_row_id", true), // hidden internal column
+            ];
+            let comment = make_comment(Some(1), Some("should not propagate"));
+            // Commenting on a hidden column should return None (skip propagation)
+            assert!(build_comment_schema_change(&comment, &columns).is_none());
+        }
+
+        #[test]
+        fn test_out_of_bounds_column_index_returns_none() {
+            let columns = vec![make_column("id", false)];
+            // Index 5 is out of bounds
+            let comment = make_comment(Some(5), Some("desc"));
+            assert!(build_comment_schema_change(&comment, &columns).is_none());
+        }
     }
 }

@@ -2647,6 +2647,14 @@ impl IcebergSinkCommitter {
             return Ok(false);
         }
 
+        // UpdateComments does not change the schema; it is idempotent and safe to re-apply.
+        if matches!(
+            schema_change.op.as_ref(),
+            Some(risingwave_pb::stream_plan::sink_schema_change::Op::UpdateComments(_))
+        ) {
+            return Ok(false);
+        }
+
         // We only support add_columns for now.
         let Some(risingwave_pb::stream_plan::sink_schema_change::Op::AddColumns(add_columns_op)) =
             schema_change.op.as_ref()
@@ -2687,19 +2695,82 @@ impl IcebergSinkCommitter {
         )))
     }
 
-    /// Commit schema changes (e.g., add columns) to the iceberg table.
+    /// Propagate column docs and/or table description to Iceberg table metadata.
+    async fn commit_update_comments_impl(
+        &mut self,
+        op: &risingwave_pb::stream_plan::PbSinkUpdateCommentsOp,
+    ) -> Result<()> {
+        let txn = Transaction::new(&self.table);
+
+        if !op.column_comments.is_empty() {
+            // Update column doc strings via UpdateSchemaAction.
+            let mut schema_action = txn.update_schema();
+            for col_comment in &op.column_comments {
+                schema_action = schema_action
+                    .set_field_doc(&col_comment.column_name, col_comment.description.clone());
+            }
+            let updated_table = schema_action
+                .apply(txn)
+                .context("Failed to apply column doc updates")
+                .map_err(SinkError::Iceberg)?
+                .commit(self.catalog.as_ref())
+                .await
+                .context("Failed to commit column doc updates to Iceberg")
+                .map_err(SinkError::Iceberg)?;
+            self.table = updated_table;
+            tracing::info!(
+                "Propagated column comments to Iceberg table {}",
+                self.table.identifier()
+            );
+        } else {
+            // Table-level description: stored as a table property under key "comment".
+            let props_action = if let Some(description) = &op.table_description {
+                txn.update_table_properties()
+                    .set("comment".to_owned(), description.clone())
+            } else {
+                txn.update_table_properties().remove("comment".to_owned())
+            };
+            let updated_table = props_action
+                .apply(txn)
+                .context("Failed to apply table description update")
+                .map_err(SinkError::Iceberg)?
+                .commit(self.catalog.as_ref())
+                .await
+                .context("Failed to commit table description to Iceberg")
+                .map_err(SinkError::Iceberg)?;
+            self.table = updated_table;
+            tracing::info!(
+                "Propagated table description to Iceberg table {}",
+                self.table.identifier()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Commit schema changes (e.g., add columns or update comments) to the iceberg table.
     /// This function uses Transaction API to atomically update the table schema
     /// with optimistic locking to prevent concurrent conflicts.
     async fn commit_schema_change_impl(&mut self, schema_change: PbSinkSchemaChange) -> Result<()> {
         use iceberg::spec::NestedField;
+        use risingwave_pb::stream_plan::sink_schema_change::Op;
 
-        let Some(risingwave_pb::stream_plan::sink_schema_change::Op::AddColumns(add_columns_op)) =
-            schema_change.op.as_ref()
-        else {
-            return Err(SinkError::Iceberg(anyhow!(
-                "Unsupported sink schema change op in iceberg sink: {:?}",
-                schema_change.op
-            )));
+        match schema_change.op.as_ref() {
+            Some(Op::UpdateComments(update_comments_op)) => {
+                return self.commit_update_comments_impl(update_comments_op).await;
+            }
+            Some(Op::AddColumns(_)) => {}
+            _ => {
+                return Err(SinkError::Iceberg(anyhow!(
+                    "Unsupported sink schema change op in iceberg sink: {:?}",
+                    schema_change.op
+                )));
+            }
+        }
+
+        let add_columns_op = match schema_change.op.as_ref() {
+            Some(Op::AddColumns(op)) => op,
+            _ => unreachable!(),
         };
 
         let add_columns = add_columns_op.fields.iter().map(Field::from).collect_vec();

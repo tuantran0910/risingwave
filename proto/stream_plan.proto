@@ -1373,9 +1373,12 @@ message SinkSchemaChange {
     // Drop columns from the schema
     SinkDropColumnsOp drop_columns = 3;
 
+    // Update table/column comments (descriptions)
+    SinkUpdateCommentsOp update_comments = 4;
+
     // Future operations can be added here...
-    // RenameColumnsOp rename_columns = 4;
-    // AlterColumnTypeOp alter_column_type = 5;
+    // RenameColumnsOp rename_columns = 5;
+    // AlterColumnTypeOp alter_column_type = 6;
   }
 }
 
@@ -1389,4 +1392,23 @@ message SinkAddColumnsOp {
 message SinkDropColumnsOp {
   // Column names to drop
   repeated string column_names = 1;
+}
+
+// Update table/column description (comment) operation.
+// Propagates COMMENT ON TABLE/COLUMN changes to the Iceberg table metadata.
+message SinkUpdateCommentsOp {
+  // Updated table-level description.
+  // When absent (field not set), the table description is not changed.
+  // When set to an empty string, the table description is removed.
+  optional string table_description = 1;
+
+  // Column-level description updates.
+  repeated SinkColumnComment column_comments = 2;
+}
+
+// A column name and its updated description.
+message SinkColumnComment {
+  string column_name = 1;
+  // When absent (field not set), the column description is removed.
+  optional string description = 2;
 }

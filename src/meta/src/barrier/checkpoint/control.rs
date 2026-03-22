@@ -296,6 +296,7 @@ impl CheckpointControl {
                     | Command::CreateSubscription { .. }
                     | Command::AlterSubscriptionRetention { .. }
                     | Command::ConnectorPropsChange(_)
+                    | Command::SinkCommentChange { .. }
                     | Command::Refresh { .. }
                     | Command::ListFinish { .. }
                     | Command::LoadFinish { .. }

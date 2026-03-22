@@ -42,6 +42,67 @@ select * from t for system_time as of '2222-12-10 11:48:06';
 statement ok
 DROP TABLE t;
 
+# test COMMENT ON for iceberg engine table
+statement ok
+create table t_comment(id int primary key, name varchar, val int) with(commit_checkpoint_interval = 1) engine = iceberg;
+
+statement ok
+comment on table t_comment is 'iceberg engine table description';
+
+statement ok
+comment on column t_comment.name is 'the name column';
+
+statement ok
+comment on column t_comment.val is 'the value column';
+
+# verify RW catalog reflects the comments
+query TTTT
+describe t_comment;
+----
+id     integer  false  NULL
+name   character varying  false  the name column
+val    integer  false  the value column
+_row_id serial  true  NULL
+_rw_timestamp timestamp with time zone  true  NULL
+primary key  _row_id  NULL  NULL
+distribution key  _row_id  NULL  NULL
+table description  t_comment  NULL  iceberg engine table description
+
+# update a comment (overwrite)
+statement ok
+comment on column t_comment.name is 'updated name column';
+
+query TTTT
+describe t_comment;
+----
+id     integer  false  NULL
+name   character varying  false  updated name column
+val    integer  false  the value column
+_row_id serial  true  NULL
+_rw_timestamp timestamp with time zone  true  NULL
+primary key  _row_id  NULL  NULL
+distribution key  _row_id  NULL  NULL
+table description  t_comment  NULL  iceberg engine table description
+
+# remove a comment (set to NULL)
+statement ok
+comment on column t_comment.val is NULL;
+
+query TTTT
+describe t_comment;
+----
+id     integer  false  NULL
+name   character varying  false  updated name column
+val    integer  false  NULL
+_row_id serial  true  NULL
+_rw_timestamp timestamp with time zone  true  NULL
+primary key  _row_id  NULL  NULL
+distribution key  _row_id  NULL  NULL
+table description  t_comment  NULL  iceberg engine table description
+
+statement ok
+DROP TABLE t_comment;
+
 statement ok
 CREATE TABLE full_type_t (
 id bigint primary key,

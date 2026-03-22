@@ -1215,6 +1215,24 @@ impl DatabaseCheckpointControl {
                 )
             }
 
+            Some(Command::SinkCommentChange {
+                sink_id,
+                schema_change,
+            }) => {
+                let mutation = Some(Command::sink_comment_change_to_mutation(
+                    sink_id,
+                    schema_change,
+                ));
+                let (table_ids, node_actors) = self.collect_base_info();
+                (
+                    mutation,
+                    table_ids,
+                    None,
+                    node_actors,
+                    PostCollectCommand::barrier(),
+                )
+            }
+
             Some(Command::Refresh {
                 table_id,
                 associated_source_id,
