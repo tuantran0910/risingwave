@@ -2703,64 +2703,17 @@ impl IcebergSinkCommitter {
         let txn = Transaction::new(&self.table);
 
         if !op.column_comments.is_empty() {
-            // Build a new schema with updated field docs by mapping column name -> description.
-            let doc_updates: std::collections::HashMap<&str, Option<&str>> = op
-                .column_comments
-                .iter()
-                .map(|c| (c.column_name.as_str(), c.description.as_deref()))
-                .collect();
-
-            let current_schema = self.table.metadata().current_schema();
-            let new_fields: Vec<iceberg::spec::NestedFieldRef> = current_schema
-                .as_struct()
-                .fields()
-                .iter()
-                .map(|field| {
-                    if let Some(new_doc) = doc_updates.get(field.name.as_str()) {
-                        let mut updated = (**field).clone();
-                        updated.doc = new_doc.map(|s| s.to_owned());
-                        std::sync::Arc::new(updated)
-                    } else {
-                        field.clone()
-                    }
-                })
-                .collect();
-
-            let metadata = self.table.metadata();
-            let new_schema_id = metadata
-                .schemas_iter()
-                .map(|s| s.schema_id())
-                .max()
-                .unwrap_or(0)
-                + 1;
-            let new_schema = iceberg::spec::Schema::builder()
-                .with_schema_id(new_schema_id)
-                .with_fields(new_fields)
-                .with_identifier_field_ids(current_schema.identifier_field_ids())
-                .build()
-                .context("Failed to build updated schema")
-                .map_err(SinkError::Iceberg)?;
-
-            let requirements = vec![
-                iceberg::TableRequirement::LastAssignedFieldIdMatch {
-                    last_assigned_field_id: metadata.last_column_id(),
-                },
-                iceberg::TableRequirement::CurrentSchemaIdMatch {
-                    current_schema_id: current_schema.schema_id(),
-                },
-            ];
-            let updates = vec![
-                iceberg::TableUpdate::AddSchema { schema: new_schema },
-                iceberg::TableUpdate::SetCurrentSchema { schema_id: -1 },
-            ];
-            let table_commit = iceberg::TableCommit::builder()
-                .ident(self.table.identifier().clone())
-                .updates(updates)
-                .requirements(requirements)
-                .build();
-            let updated_table = self
-                .catalog
-                .update_table(table_commit)
+            // Update column doc strings via UpdateSchemaAction.
+            let mut schema_action = txn.update_schema();
+            for col_comment in &op.column_comments {
+                schema_action = schema_action
+                    .set_field_doc(&col_comment.column_name, col_comment.description.clone());
+            }
+            let updated_table = schema_action
+                .apply(txn)
+                .context("Failed to apply column doc updates")
+                .map_err(SinkError::Iceberg)?
+                .commit(self.catalog.as_ref())
                 .await
                 .context("Failed to commit column doc updates to Iceberg")
                 .map_err(SinkError::Iceberg)?;
